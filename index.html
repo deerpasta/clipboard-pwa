@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>剪貼簿</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="theme-color" content="#2f6f5e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="剪貼簿">
+<style>
+:root{--bg:#f4f5f3;--card:#fff;--ink:#222522;--mut:#7b807a;--line:#dcdfda;--acc:#2f6f5e;--onacc:#fff;--del:#c8483a;--head:#e8ebe7;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#171917;--card:#242724;--ink:#ecefeb;--mut:#9aa099;--line:#363a36;--acc:#7cc4ae;--onacc:#12211c;--del:#d9604f;--head:#303430}}
+:root[data-theme="dark"]{--bg:#171917;--card:#242724;--ink:#ecefeb;--mut:#9aa099;--line:#363a36;--acc:#7cc4ae;--onacc:#12211c;--del:#d9604f;--head:#303430}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 "Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif;min-height:100vh}
+header{display:flex;align-items:center;gap:6px;padding:12px;position:sticky;top:env(safe-area-inset-top,0px);background:var(--bg);z-index:5;border-bottom:1px solid var(--line)}
+header::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);background:var(--bg);z-index:-1}
+h1{font-size:19px;margin:0;flex:1;font-weight:600}
+button{font:inherit;color:var(--ink);background:var(--head);border:1px solid var(--line);border-radius:8px;padding:7px 11px;cursor:pointer}
+button:disabled{opacity:.4}
+button.pri{background:var(--acc);border-color:var(--acc);color:var(--onacc);font-weight:600}
+button:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+main{max-width:720px;margin:0 auto;padding:6px 0 40px}
+.wrap{position:relative;overflow:hidden;border-radius:10px;margin:8px 12px;background:var(--del)}
+.bg{position:absolute;inset:0;display:flex;align-items:center;padding-left:18px;color:#fff;font-weight:600}
+.row{position:relative;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px;touch-action:pan-y;user-select:none;-webkit-user-select:none;transition:transform .18s,background .3s}
+.row.drag{transition:none}
+.row.ok{background:var(--head)}
+.tx{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;white-space:pre-wrap;word-break:break-word}
+.row img{display:block;max-width:100%;max-height:150px;object-fit:contain;border-radius:6px;pointer-events:none}
+.dt{font-size:12px;color:var(--mut);margin-top:4px}
+.empty{padding:48px 24px;text-align:center;color:var(--mut)}
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(24px + env(safe-area-inset-bottom,0px));background:var(--ink);color:var(--bg);padding:8px 16px;border-radius:20px;z-index:30;font-size:14px;max-width:90vw}
+</style>
+</head>
+<body>
+<header><h1>剪貼簿</h1><button id="undo" disabled>復原</button><button id="img">圖片</button><button id="paste" class="pri">貼上存入</button></header>
+<main id="list"></main>
+<input type="file" id="file" accept="image/*" multiple hidden>
+<script>
+let db,items=[],undo=[],urls={};
+const $=id=>document.getElementById(id);
+const open=()=>new Promise((res,rej)=>{const r=indexedDB.open('clip',1);r.onupgradeneeded=()=>r.result.createObjectStore('i',{keyPath:'id'});r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)});
+const tx=(m,f)=>new Promise((res,rej)=>{if(!db)return res();const t=db.transaction('i',m),q=f(t.objectStore('i'));t.oncomplete=()=>res(q&&q.result);t.onerror=()=>rej(t.error)});
+const put=it=>tx('readwrite',s=>s.put(it)).catch(()=>toast('儲存失敗'));
+const del=id=>tx('readwrite',s=>s.delete(id)).catch(()=>{});
+function toast(t){document.querySelectorAll('.toast').forEach(e=>e.remove());const e=document.createElement('div');e.className='toast';e.textContent=t;document.body.appendChild(e);setTimeout(()=>e.remove(),2000)}
+function fmt(t){const d=new Date(t),p=x=>String(x).padStart(2,'0');return (d.getMonth()+1)+'/'+d.getDate()+' '+p(d.getHours())+':'+p(d.getMinutes())}
+function sort(){items.sort((a,b)=>b.ts-a.ts)}
+function url(it){return urls[it.id]||(urls[it.id]=URL.createObjectURL(it.blob))}
+function render(){
+  $('undo').disabled=!undo.length;
+  const m=$('list');
+  if(!items.length){m.innerHTML='<div class="empty">還沒有內容。先在別處複製文字或圖片,再按「貼上存入」。</div>';return}
+  m.innerHTML=items.map(it=>'<div class="wrap" data-id="'+it.id+'"><div class="bg">刪除</div><div class="row">'+
+    (it.kind==='image'?'<img alt="圖片" src="'+url(it)+'">':'<div class="tx"></div>')+'<div class="dt">'+fmt(it.ts)+'</div></div></div>').join('');
+  m.querySelectorAll('.wrap').forEach(w=>{const it=items.find(x=>x.id===w.dataset.id);if(it.kind==='text')w.querySelector('.tx').textContent=it.text});
+}
+function pushUndo(u){undo.push(u);if(undo.length>30)undo.shift()}
+async function addText(t){
+  const same=items.find(i=>i.kind==='text'&&i.text===t);
+  if(same){same.ts=Date.now();await put(same);sort();render();toast('已存在,移到最上面');return}
+  const it={id:'t'+Date.now()+Math.random().toString(36).slice(2,6),kind:'text',text:t,ts:Date.now()};
+  items.push(it);sort();await put(it);pushUndo({t:'add',id:it.id});render();toast('已存入文字');
+}
+async function toPng(b){
+  const bm=await createImageBitmap(b),k=Math.min(1,3000/Math.max(bm.width,bm.height));
+  const c=document.createElement('canvas');c.width=Math.round(bm.width*k);c.height=Math.round(bm.height*k);
+  c.getContext('2d').drawImage(bm,0,0,c.width,c.height);
+  return new Promise((res,rej)=>c.toBlob(x=>x?res(x):rej(new Error('png')),'image/png'));
+}
+async function addImage(b){
+  const png=await toPng(b);
+  const it={id:'i'+Date.now()+Math.random().toString(36).slice(2,6),kind:'image',blob:png,ts:Date.now()};
+  items.push(it);sort();await put(it);pushUndo({t:'add',id:it.id});render();toast('已存入圖片');
+}
+async function pasteIn(){
+  try{
+    const cis=await navigator.clipboard.read();
+    for(const ci of cis){
+      const ty=ci.types.find(t=>t.startsWith('image/'));
+      if(ty){await addImage(await ci.getType(ty));return}
+      if(ci.types.includes('text/plain')){const t=await(await ci.getType('text/plain')).text();if(t.trim()){await addText(t);return}}
+    }
+    toast('剪貼簿是空的');
+  }catch(e){
+    try{const t=await navigator.clipboard.readText();if(t.trim())await addText(t);else toast('剪貼簿是空的')}
+    catch(e2){toast('無法讀取剪貼簿,請在跳出的提示按「貼上」')}
+  }
+}
+async function copy(it){
+  try{
+    if(it.kind==='image')await navigator.clipboard.write([new ClipboardItem({'image/png':it.blob})]);
+    else await navigator.clipboard.writeText(it.text);
+    toast('已複製');return true;
+  }catch(e){
+    if(it.kind==='text'){
+      try{const a=document.createElement('textarea');a.value=it.text;document.body.appendChild(a);a.select();document.execCommand('copy');a.remove();toast('已複製');return true}catch(e2){}
+    }
+    toast('複製失敗');return false;
+  }
+}
+async function removeItem(id,record){
+  const i=items.findIndex(x=>x.id===id);if(i<0)return;
+  const it=items.splice(i,1)[0];await del(id);
+  if(record)pushUndo({t:'del',it});
+  if(urls[id]&&!record){URL.revokeObjectURL(urls[id]);delete urls[id]}
+  render();
+}
+$('undo').onclick=async()=>{
+  const u=undo.pop();if(!u)return;
+  if(u.t==='add'){await removeItem(u.id,false);toast('已復原:取消存入')}
+  else{items.push(u.it);sort();await put(u.it);toast('已復原:找回刪除')}
+  render();
+};
+$('paste').onclick=pasteIn;
+$('img').onclick=()=>$('file').click();
+$('file').onchange=async e=>{for(const f of e.target.files){try{await addImage(f)}catch(x){toast('無法讀取圖片')}}e.target.value=''};
+
+// 點擊複製、右滑刪除
+let g=null;
+const L=$('list');
+L.addEventListener('pointerdown',e=>{const r=e.target.closest('.row');if(!r)return;g={r,w:r.parentElement,x:e.clientX,y:e.clientY,dx:0,drag:false,id:r.parentElement.dataset.id}});
+L.addEventListener('pointermove',e=>{
+  if(!g)return;const dx=e.clientX-g.x,dy=e.clientY-g.y;
+  if(!g.drag&&dx>10&&dx>Math.abs(dy)*1.5){g.drag=true;g.r.classList.add('drag');try{g.r.setPointerCapture(e.pointerId)}catch(x){}}
+  if(g.drag){g.dx=Math.max(dx,0);g.r.style.transform='translateX('+g.dx+'px)'}
+  else if(Math.abs(dy)>10||dx<-10)g.moved=true;
+});
+L.addEventListener('pointerup',async e=>{
+  if(!g)return;const s=g;g=null;
+  if(s.drag){
+    s.r.classList.remove('drag');
+    if(s.dx>Math.min(110,s.w.offsetWidth*.35)){s.r.style.transform='translateX(110%)';setTimeout(()=>removeItem(s.id,true),180)}
+    else s.r.style.transform='';
+  }else if(!s.moved){
+    const it=items.find(x=>x.id===s.id);if(it&&await copy(it)){s.r.classList.add('ok');setTimeout(()=>s.r.classList.remove('ok'),600)}
+  }
+});
+L.addEventListener('pointercancel',()=>{if(g){g.r.classList.remove('drag');g.r.style.transform='';g=null}});
+
+(async()=>{
+  try{db=await open();items=await tx('readonly',s=>s.getAll())||[]}catch(e){toast('無法使用本機儲存,關閉後內容會消失')}
+  sort();render();
+  try{navigator.storage&&navigator.storage.persist&&navigator.storage.persist()}catch(e){}
+})();
+if('serviceWorker' in navigator&&/^https?:$/.test(location.protocol)){navigator.serviceWorker.register('sw.js').catch(()=>{})}
+</script>
+</body>
+</html>
